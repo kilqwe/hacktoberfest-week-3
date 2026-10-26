@@ -1,6 +1,6 @@
 # git-catchup
 
-**Catch up on where you left off.** One command gives you a briefing on a branch you abandoned two weeks ago, written by a local open-weight model. Nothing leaves your machine.
+**Catch up on where you left off.** Come back to any repo, finished or not, and one command tells you what the project is, what's done, what's still open, and what you'd planned next. It reads your commits, uncommitted work, TODO/FIXME comments, README and notes files (`TODO.md`, `NOTES.md`, `ROADMAP.md`...), and a local open-weight model writes the briefing. Nothing leaves your machine.
 
 ```
 $ git catchup
@@ -45,5 +45,3 @@ Check exact tags with `ollama list`.
 - Inference runs on `localhost` through Ollama. Works with Wi-Fi off.
 - Before prompting, `.env`/key files are dropped from the diff and common secrets (API keys, tokens, passwords, private keys) are redacted. `--dry-run` shows the final prompt so you can verify.
 - Redaction is regex-based and best-effort. Review `--dry-run` output for sensitive repos.
-
-

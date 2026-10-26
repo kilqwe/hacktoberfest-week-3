@@ -37,6 +37,60 @@ class Context:
     test_output: str = ""
     redactions: int = 0
     notes: list[str] = field(default_factory=list)
+    readme: str = ""
+    notes_text: str = ""
+    notes_files: list[str] = field(default_factory=list)
+    total_commits: int = 0
+    commit_subjects: list[str] = field(default_factory=list)
+
+
+NOTE_NAMES = re.compile(r"(?i)^(todos?|notes?|roadmap|ideas?|plan|backlog|wishlist)(\.[a-z]+)?$")
+README_NAME = re.compile(r"(?i)^readme(\.[a-z]+)?$")
+
+
+def _read(path: str, limit: int) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            t = f.read(limit + 1)
+    except OSError:
+        return ""
+    return t[:limit] + ("\n...[truncated]" if len(t) > limit else "")
+
+
+def _project_docs(root: str) -> tuple[str, str, list[str]]:
+    """README excerpt + any notes/todo/roadmap files in the repo root."""
+    readme, notes, names = "", [], []
+    budget = 3000
+    for name in sorted(os.listdir(root)):
+        fp = os.path.join(root, name)
+        if not os.path.isfile(fp) or is_sensitive_file(name):
+            continue
+        if README_NAME.match(name) and not readme:
+            readme = _read(fp, 1500)
+        elif NOTE_NAMES.match(name) and budget > 0:
+            text = _read(fp, min(2000, budget))
+            budget -= len(text)
+            notes.append(f"### {name}\n{text}")
+            names.append(name)
+    return readme, "\n\n".join(notes), names
+
+
+def _repo_todos(root: str) -> list[str]:
+    """TODO/FIXME lines across the whole repo (tracked + untracked, committed or not)."""
+    out = git("grep", "-n", "-I", "-w", "--untracked",
+              "-e", "TODO", "-e", "FIXME", "-e", "XXX", "-e", "HACK", cwd=root, check=False)
+    found = []
+    for line in out.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        path, lineno, text = parts
+        base = os.path.basename(path)
+        if (NOTE_NAMES.match(base) or README_NAME.match(base) or SKIP_DIFF.search(path)
+                or is_sensitive_file(path)):
+            continue
+        found.append(f"{path}:{lineno}: {text.strip()[:160]}")
+    return found[:15]
 
 
 def _find_base(cwd) -> str | None:
@@ -107,23 +161,27 @@ def collect(cwd: str | None = None, n_commits: int = 8, max_diff_chars: int = 60
     work_age = (now - max(mtimes)) / 86400 if mtimes else None
 
     # Commits: on a feature branch show what's ahead of base; otherwise the latest N.
+    rng_args: list[str] = []
     fmt = "--pretty=format:%h %ad %s"
     if base and branch not in (base, base.split("/")[-1]):
         rng = f"{base}..HEAD"
         commits = git("log", rng, f"-n{n_commits}", fmt, "--date=short", "--name-only", cwd=cwd)
+        rng_args = [rng]
         if not commits:
+            rng_args = []
             commits = git("log", f"-n{n_commits}", fmt, "--date=short", "--name-only", cwd=cwd)
             notes.append("branch has no commits ahead of base; showing latest commits")
     else:
         commits = git("log", f"-n{n_commits}", fmt, "--date=short", "--name-only", cwd=cwd)
 
+    subjects = git("log", *rng_args, f"-n{n_commits}", "--pretty=format:%ad  %s",
+                   "--date=short", cwd=cwd).splitlines()
     raw_diff = git("diff", "HEAD", cwd=cwd)
     diff = _budget_diff(raw_diff, max_diff_chars, notes)
 
-    todos = []
-    for line in raw_diff.splitlines():
-        if line.startswith("+") and not line.startswith("+++") and re.search(r"\b(TODO|FIXME|XXX|HACK)\b", line):
-            todos.append(line[1:].strip())
+    todos = _repo_todos(root)
+    readme, notes_text, notes_files = _project_docs(root)
+    total_commits = int(git("rev-list", "--count", "HEAD", cwd=cwd))
 
     # Redact everything that will leave this module.
     total = 0
@@ -131,14 +189,18 @@ def collect(cwd: str | None = None, n_commits: int = 8, max_diff_chars: int = 60
         nonlocal total
         t, n = redact(t)
         total += n
-        return t
+        # The model never sees lines that held a secret, so it cannot talk about them.
+        return re.sub(r"(?m)^.*\[REDACTED.*$", "[line omitted]", t)
 
     ctx = Context(
         branch=branch, base=base,
         commit_age_days=commit_age, work_age_days=work_age,
         commits=clean(commits), status=status, changed_files=changed,
-        diff=clean(diff), todos=[clean(t) for t in todos[:10]],
+        diff=clean(diff), todos=[clean(t) for t in todos],
         test_output=clean(test_output), notes=notes,
+        readme=clean(readme), notes_text=clean(notes_text),
+        notes_files=notes_files, total_commits=total_commits,
+        commit_subjects=[clean(x) for x in subjects],
     )
     ctx.redactions = total
     return ctx

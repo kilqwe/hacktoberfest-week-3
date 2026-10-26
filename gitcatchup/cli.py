@@ -4,6 +4,7 @@ import sys
 
 from . import __version__, config
 from .collect import GitError, collect
+from .redact import is_sensitive_file
 from .llm import LLMError, generate
 from .prompt import build
 
@@ -43,6 +44,7 @@ def main(argv=None) -> int:
     ap.add_argument("--test", metavar="CMD", help='run a test command and include its output, e.g. --test "pytest -x"')
     ap.add_argument("--dry-run", action="store_true",
                     help="print exactly what would be sent to the model (after redaction) and exit")
+    ap.add_argument("--out", metavar="FILE", help="also save the briefing to FILE as UTF-8 (avoids PowerShell redirect encoding issues)")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
 
@@ -53,14 +55,49 @@ def main(argv=None) -> int:
         print(f"git catchup: {e}", file=sys.stderr)
         return 1
 
-    # Facts come from git, not from the model.
-    print(f"\n git catchup | branch: {ctx.branch}" + (f" (base: {ctx.base})" if ctx.base else ""))
-    print(f" Last commit: {_ago(ctx.commit_age_days)}"
-          + (f" | uncommitted edits: {_ago(ctx.work_age_days)}" if ctx.work_age_days is not None else ""))
-    print(f" Uncommitted files: {len(ctx.changed_files)} | secrets redacted: {ctx.redactions}")
+    buf: list[str] = []
+
+    def emit(text: str = "") -> None:
+        print(text)
+        buf.append(text)
+
+    # Everything factual is printed by Python straight from git. The model only
+    # writes the short narrative at the end.
+    emit(f"\n git catchup | branch: {ctx.branch}" + (f" (base: {ctx.base})" if ctx.base else ""))
+    emit(f" Last commit: {_ago(ctx.commit_age_days)}"
+         + (f" | uncommitted edits: {_ago(ctx.work_age_days)}" if ctx.work_age_days is not None else "")
+         + f" | {ctx.total_commits} commits total")
+    emit(f" Secrets redacted before prompting: {ctx.redactions}")
     for n in ctx.notes:
-        print(f" note: {n}")
-    print()
+        emit(f" note: {n}")
+    emit()
+    emit(" Done so far (your latest commits):")
+    for c in ctx.commit_subjects[:6]:
+        emit(f"   - {c}")
+    shown = [l for l in ctx.status.splitlines() if not is_sensitive_file(l[3:].strip())]
+    if shown:
+        emit()
+        emit(f" Uncommitted ({len(shown)} files):")
+        for l in shown[:8]:
+            emit(f"   {l}")
+    if ctx.todos:
+        emit()
+        emit(f" Open notes in your code ({len(ctx.todos)}):")
+        for t in ctx.todos[:6]:
+            emit(f"   - {t}")
+        if len(ctx.todos) > 6:
+            emit(f"   ... and {len(ctx.todos) - 6} more")
+    for block in filter(None, ctx.notes_text.split("### ")):
+        name, _, body = block.partition("\n")
+        lines = [l.strip() for l in body.splitlines() if l.strip() and not l.startswith("...[truncated")]
+        if lines:
+            emit()
+            emit(f" Your notes ({name.strip()}):")
+            for l in lines[:8]:
+                emit(f"   {l}")
+    emit()
+    emit(f" --- briefing, written locally by {args.model} ---")
+    emit()
 
     prompt = build(ctx)
     if args.dry_run:
@@ -70,11 +107,17 @@ def main(argv=None) -> int:
 
     print(f" Reading the branch with {args.model} (locally)...\n", file=sys.stderr)
     try:
-        print(generate(prompt, args.model, args.host, cfg["num_ctx"], cfg["timeout"]))
+        out = generate(prompt, args.model, args.host, cfg["num_ctx"], cfg["timeout"])
+        i = out.find("**")
+        emit(out[i:] if i > 0 else out)
     except LLMError as e:
         print(f"git catchup: {e}", file=sys.stderr)
         return 2
     print()
+    if args.out:
+        with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(buf) + "\n")
+        print(f" saved to {args.out}", file=sys.stderr)
     return 0
 
 
