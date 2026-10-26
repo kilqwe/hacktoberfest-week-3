@@ -1,3 +1,4 @@
+"""Strip likely secrets before anything is put in a prompt."""
 import re
 
 PATTERNS = [

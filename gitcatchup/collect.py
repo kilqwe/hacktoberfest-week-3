@@ -1,3 +1,4 @@
+"""Gather facts from git. Everything factual comes from here, not from the model."""
 import os
 import re
 import subprocess
@@ -42,6 +43,8 @@ class Context:
     notes_files: list[str] = field(default_factory=list)
     total_commits: int = 0
     commit_subjects: list[str] = field(default_factory=list)
+    start_here: str = ""
+    known_files: set[str] = field(default_factory=set)
 
 
 NOTE_NAMES = re.compile(r"(?i)^(todos?|notes?|roadmap|ideas?|plan|backlog|wishlist)(\.[a-z]+)?$")
@@ -180,6 +183,9 @@ def collect(cwd: str | None = None, n_commits: int = 8, max_diff_chars: int = 60
     diff = _budget_diff(raw_diff, max_diff_chars, notes)
 
     todos = _repo_todos(root)
+    # TODOs in files you were just editing come first.
+    changed_set = {c.replace("\\", "/") for c in changed}
+    todos.sort(key=lambda t: t.split(":", 1)[0] not in changed_set)
     readme, notes_text, notes_files = _project_docs(root)
     total_commits = int(git("rev-list", "--count", "HEAD", cwd=cwd))
 
@@ -203,4 +209,17 @@ def collect(cwd: str | None = None, n_commits: int = 8, max_diff_chars: int = 60
         commit_subjects=[clean(x) for x in subjects],
     )
     ctx.redactions = total
+    ctx.known_files = {f.replace("\\", "/") for f in
+                       git("ls-files", "--cached", "--others", "--exclude-standard", cwd=root).splitlines()}
+    # Priority: failing tests > TODO/FIXME (edited files first) > first line of a notes file.
+    if test_output and not test_output.startswith("exit code 0"):
+        ctx.start_here = "make the failing tests pass (see TEST OUTPUT)"
+    elif ctx.todos:
+        ctx.start_here = ctx.todos[0]
+    else:
+        for line in ctx.notes_text.splitlines():
+            line = line.strip().lstrip("-*\u2022 ").strip()
+            if line and not line.startswith("###") and not line.startswith("...[truncated"):
+                ctx.start_here = f"idea from your notes: {line}"
+                break
     return ctx

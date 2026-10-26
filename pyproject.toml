@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "git-catchup"
-version = "0.1.0"
-description = "Catch up on where you left off. A local-LLM briefing for stale git branches."
+version = "0.3.0"
+description = "Catch up on where you left off. A local-LLM briefing for git repos."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
